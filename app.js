@@ -132,7 +132,8 @@ const state = {
   gridView: 'grid', // 'grid' or 'single'
   detailPanelExpanded: false,
   filteredArtworks: [], // List of artworks in current filter for navigation
-  currentArtworkIndex: 0 // Current position in filteredArtworks
+  currentArtworkIndex: 0, // Current position in filteredArtworks
+  isDarkMode: false // Dark mode preference
 };
 
 // ==================== 
@@ -140,6 +141,13 @@ const state = {
 // ====================
 
 async function initApp() {
+  // Load theme preference
+  const savedTheme = localStorage.getItem('darkMode');
+  state.isDarkMode = savedTheme === 'true';
+  if (state.isDarkMode) {
+    document.body.classList.add('dark-theme');
+  }
+
   // Check if we need to seed data
   const count = await db.artworks.count();
   if (count === 0) {
@@ -148,6 +156,24 @@ async function initApp() {
   }
 
   renderApp();
+}
+
+// Toggle dark mode
+function toggleDarkMode(enabled) {
+  state.isDarkMode = enabled;
+  localStorage.setItem('darkMode', enabled);
+
+  if (enabled) {
+    document.body.classList.add('dark-theme');
+  } else {
+    document.body.classList.remove('dark-theme');
+  }
+
+  // Update meta theme-color for mobile browser UI
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  if (metaTheme) {
+    metaTheme.setAttribute('content', enabled ? '#0A0A0A' : '#ffffff');
+  }
 }
 
 // ==================== 
@@ -268,6 +294,13 @@ function renderDetailScreen() {
             <svg viewBox="0 0 24 24">
               <circle cx="11" cy="11" r="7"/>
               <path d="M21 21l-4.35-4.35"/>
+            </svg>
+          </button>
+          <button class="icon-btn dark" id="share-btn" aria-label="Share artwork">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+              <polyline points="16 6 12 2 8 6"/>
+              <line x1="12" y1="2" x2="12" y2="15"/>
             </svg>
           </button>
           <button class="icon-btn dark" aria-label="More options">
@@ -404,6 +437,21 @@ function renderSettingsScreen() {
       </header>
       
       <div class="settings-content">
+        <section class="settings-section">
+          <h2 class="form-section-title">Appearance</h2>
+          
+          <div class="settings-row">
+            <div class="settings-row-content">
+              <span class="settings-row-title">Dark Mode</span>
+              <span class="settings-row-subtitle">Use dark color theme</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="dark-mode-toggle" ${state.isDarkMode ? 'checked' : ''}>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </section>
+        
         <section class="settings-section">
           <h2 class="form-section-title">Data</h2>
           
@@ -1017,6 +1065,85 @@ async function deleteArtwork(artworkId) {
   showScreen('home');
 }
 
+async function shareArtwork(artwork) {
+  if (!artwork.imageData) {
+    showToast('No image to share');
+    return;
+  }
+
+  showToast('Preparing share...');
+
+  try {
+    // 1. Create canvas and draw the card
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+
+    // Wait for image to load
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = artwork.imageData;
+    });
+
+    // Set canvas size (vertical layout)
+    const padding = 60;
+    const textHeight = 200;
+    const width = 1200;
+    const scale = width / img.width;
+    const height = (img.height * scale) + textHeight + (padding * 2);
+
+    canvas.width = width;
+    canvas.height = height;
+
+    // Background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+
+    // Draw Image
+    ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, width, img.height * scale);
+
+    // Text configuration
+    ctx.fillStyle = '#1a1a1a';
+    ctx.textAlign = 'center';
+
+    // Title
+    ctx.font = 'bold 56px sans-serif';
+    ctx.fillText(artwork.title || 'Untitled', width / 2, (img.height * scale) + 100);
+
+    // Artist
+    ctx.fillStyle = '#666666';
+    ctx.font = '40px sans-serif';
+    ctx.fillText(artwork.artist || 'Unknown Artist', width / 2, (img.height * scale) + 170);
+
+    // Watermark
+    ctx.fillStyle = '#cccccc';
+    ctx.font = '24px sans-serif';
+    ctx.fillText('Art Album', width / 2, height - 30);
+
+    // 2. Convert to Blob
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+    const file = new File([blob], `share-${artwork.id}.jpg`, { type: 'image/jpeg' });
+
+    // 3. Share or Download
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: artwork.title || 'Artwork',
+        text: `Check out "${artwork.title}" by ${artwork.artist} from my collection.`
+      });
+    } else {
+      // Fallback: Download
+      downloadBlob(blob, `share-${artwork.title || 'artwork'}.jpg`);
+      showToast('Image downloaded');
+    }
+
+  } catch (error) {
+    console.error('Share failed:', error);
+    showToast('Share failed');
+  }
+}
+
 // ==================== 
 // UI HELPERS
 // ====================
@@ -1192,6 +1319,9 @@ function attachEventListeners() {
 
   // Settings screen
   document.getElementById('settings-back').addEventListener('click', () => showScreen('home'));
+  document.getElementById('dark-mode-toggle').addEventListener('change', (e) => {
+    toggleDarkMode(e.target.checked);
+  });
   document.getElementById('export-btn').addEventListener('click', exportCollection);
   document.getElementById('import-btn').addEventListener('click', () => {
     document.getElementById('import-file-input').click();
@@ -1205,6 +1335,7 @@ function attachEventListeners() {
 
   // Detail screen
   document.getElementById('detail-back').addEventListener('click', () => showScreen('home'));
+  document.getElementById('share-btn').addEventListener('click', () => shareArtwork(state.selectedArtwork));
   document.getElementById('detail-bottom-bar').addEventListener('click', () => toggleDetailPanel(true));
   document.getElementById('panel-handle').addEventListener('click', () => toggleDetailPanel(false));
 

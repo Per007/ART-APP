@@ -26,6 +26,96 @@
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* Dark Theme */
+body.dark-theme {
+  --bg-primary: #0A0A0A;
+  --bg-secondary: #1A1A1A;
+  --bg-dark: #000000;
+  --bg-overlay: rgba(26, 26, 26, 0.97);
+  --text-primary: #FFFFFF;
+  --text-secondary: #A0A0A0;
+  --text-tertiary: #6B6B6B;
+  --text-inverse: #0A0A0A;
+  --accent: #E0E0E0;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-input: rgba(255, 255, 255, 0.15);
+}
+
+/* Dark theme specific overrides */
+body.dark-theme .home-header {
+  background: rgba(10, 10, 10, 0.92);
+}
+
+body.dark-theme .dialog {
+  background: var(--bg-secondary);
+}
+
+body.dark-theme .settings-row:hover {
+  background: #252525;
+}
+
+body.dark-theme .settings-row:active {
+  background: #2A2A2A;
+}
+
+body.dark-theme .fab {
+  background: #FFFFFF;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+body.dark-theme .fab svg {
+  stroke: #0A0A0A;
+}
+
+body.dark-theme .toast {
+  background: #FFFFFF;
+  color: #0A0A0A;
+}
+
+/* Toggle Switch Component */
+.toggle-switch {
+  position: relative;
+  width: 50px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--border-input);
+  border-radius: 28px;
+  transition: all var(--transition-smooth);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  height: 22px;
+  width: 22px;
+  left: 3px;
+  bottom: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: all var(--transition-smooth);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch input:checked+.toggle-slider {
+  background: var(--success);
+}
+
+.toggle-switch input:checked+.toggle-slider::before {
+  transform: translateX(22px);
+}
+
 * {
   margin: 0;
   padding: 0;
