@@ -1,10 +1,9 @@
-const CACHE_NAME = 'art-album-v1';
+const CACHE_NAME = 'art-album-v2';
+const BASE_PATH = '/ART-APP/';
 const STATIC_ASSETS = [
-    '/',
-    '/index.html',
-    '/styles.css',
-    '/app.js',
-    '/manifest.json'
+    BASE_PATH,
+    BASE_PATH + 'index.html',
+    BASE_PATH + 'assets/'
 ];
 
 // Install event - cache static assets
