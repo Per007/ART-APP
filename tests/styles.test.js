@@ -30,7 +30,10 @@ describe('artwork image framing', () => {
 
   it('keeps large detail images within a restrained viewport area', () => {
     const detailRule = css.match(/\.detail-image\s*\{([^}]+)\}/)?.[1] || '';
-    expect(detailRule).toContain('max-width: min(88%, 960px)');
-    expect(detailRule).toContain('max-height: 80%');
+    expect(detailRule).toContain('width: 100%');
+    expect(detailRule).toContain('height: 100%');
+    expect(detailRule).toContain('max-width: min(88vw, 960px)');
+    expect(detailRule).toContain('max-height: calc(100vh - 160px)');
+    expect(css).toContain('.detail-fullscreen {\n  flex: 1;\n  min-width: 0;\n  min-height: 0;');
   });
 });
