@@ -11,3 +11,26 @@ describe('theme contrast', () => {
     expect(saveButtonRule).toContain('color: var(--text-inverse)');
   });
 });
+
+describe('artwork image framing', () => {
+  it.each([
+    '.artwork-image',
+    '.detail-image',
+    '.viewfinder-frame img',
+    '.image-preview img'
+  ])('shows the complete image in %s', (selector) => {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rule = css.match(new RegExp(`${escapedSelector}\\s*\\{([^}]+)\\}`))?.[1] || '';
+    expect(rule).toContain('object-fit: contain');
+  });
+
+  it('does not crop artwork cards with hover zoom', () => {
+    expect(css).not.toMatch(/\.artwork-card:hover\s+\.artwork-image/);
+  });
+
+  it('keeps large detail images within a restrained viewport area', () => {
+    const detailRule = css.match(/\.detail-image\s*\{([^}]+)\}/)?.[1] || '';
+    expect(detailRule).toContain('max-width: min(88%, 960px)');
+    expect(detailRule).toContain('max-height: 80%');
+  });
+});
