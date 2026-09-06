@@ -1482,6 +1482,197 @@ async function deleteArtwork(artworkId) {
   showScreen('home');
 }
 
+// Card metrics are authored against a 1200px card and scaled down for
+// narrower source images, so a small photo yields a smaller — not a
+// coarser — card.
+const SHARE_CARD_WIDTH = 1200;
+const SHARE_CARD_PADDING = 80;
+const SHARE_CARD_IMAGE_GAP = 72;
+const SHARE_CARD_WATERMARK_GAP = 56;
+const SHARE_CARD_BOTTOM_PADDING = 72;
+const SHARE_CARD_FONT_STACK = "'DM Sans', system-ui, sans-serif";
+
+const SHARE_CARD_ROLES = {
+  title: { size: 56, weight: '600 ', lineHeight: 68, gapAfter: 14, color: '#1a1a1a' },
+  artist: { size: 40, weight: '', lineHeight: 52, gapAfter: 26, color: '#666666' },
+  meta: { size: 30, weight: '', lineHeight: 42, gapAfter: 6, color: '#8a8a8a' },
+  watermark: { size: 24, weight: '', lineHeight: 32, gapAfter: 0, color: '#c4c4c4' }
+};
+
+function shareCardText(value) {
+  return String(value ?? '').trim();
+}
+
+// Only the wall-label fields travel with a shared card. Location and
+// personal notes stay private by never entering this list.
+function shareCardBlocks(artwork) {
+  const headline = [artwork.year, artwork.medium].map(shareCardText).filter(Boolean).join(' · ');
+
+  return [
+    { role: 'title', text: shareCardText(artwork.title) || 'Untitled' },
+    { role: 'artist', text: shareCardText(artwork.artist) || 'Unknown artist' },
+    ...[headline, shareCardText(artwork.dimensions)]
+      .filter(Boolean)
+      .map((text) => ({ role: 'meta', text })),
+    { role: 'watermark', text: 'Art Album' }
+  ];
+}
+
+function breakShareCardWord(word, font, maxWidth, measureText) {
+  const chunks = [];
+  let current = '';
+
+  for (const character of word) {
+    const candidate = current + character;
+    if (current && measureText(candidate, font) > maxWidth) {
+      chunks.push(current);
+      current = character;
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function wrapShareCardText(text, font, maxWidth, measureText) {
+  const lines = [];
+  let current = '';
+
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    // A word too wide for a line of its own is broken on character
+    // boundaries rather than left to run off the card.
+    if (measureText(word, font) > maxWidth) {
+      if (current) lines.push(current);
+      const chunks = breakShareCardWord(word, font, maxWidth, measureText);
+      current = chunks.pop() ?? '';
+      lines.push(...chunks);
+      continue;
+    }
+
+    const candidate = current ? `${current} ${word}` : word;
+    if (current && measureText(candidate, font) > maxWidth) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current) lines.push(current);
+  return lines.length ? lines : [text];
+}
+
+function buildShareCardLayout(artwork, imageSize, options = {}) {
+  const measureText = options.measureText;
+  if (typeof measureText !== 'function') throw new Error('measureText is required');
+  if (!imageSize?.width || !imageSize?.height) throw new Error('Invalid image dimensions');
+
+  const width = Math.min(options.maxWidth ?? SHARE_CARD_WIDTH, imageSize.width);
+  const scale = width / SHARE_CARD_WIDTH;
+  const textWidth = width - SHARE_CARD_PADDING * scale * 2;
+  const imageHeight = imageSize.height * (width / imageSize.width);
+
+  const lines = [];
+  let y = imageHeight + SHARE_CARD_IMAGE_GAP * scale;
+
+  for (const block of shareCardBlocks(artwork)) {
+    const role = SHARE_CARD_ROLES[block.role];
+    const font = `${role.weight}${role.size * scale}px ${SHARE_CARD_FONT_STACK}`;
+
+    if (block.role === 'watermark') y += SHARE_CARD_WATERMARK_GAP * scale;
+
+    for (const text of wrapShareCardText(block.text, font, textWidth, measureText)) {
+      y += role.lineHeight * scale;
+      lines.push({ role: block.role, text, font, color: role.color, x: width / 2, y });
+    }
+
+    y += role.gapAfter * scale;
+  }
+
+  return {
+    width,
+    height: y + SHARE_CARD_BOTTOM_PADDING * scale,
+    image: { x: 0, y: 0, width, height: imageHeight },
+    lines
+  };
+}
+
+function createCanvasTextMeasurer() {
+  const context = document.createElement('canvas').getContext('2d');
+  if (!context) throw new Error('Share canvas is unavailable');
+
+  return (text, font) => {
+    context.font = font;
+    return context.measureText(text).width;
+  };
+}
+
+// The card is drawn in the app's own typeface, but only once the browser
+// confirms it is available — otherwise canvas silently falls back.
+async function loadShareCardFonts(layout) {
+  if (!document.fonts?.load) return;
+
+  const fonts = [...new Set(layout.lines.map((line) => line.font))];
+  try {
+    await Promise.all(fonts.map((font) => document.fonts.load(font)));
+  } catch (error) {
+    console.warn('Share card font loading failed:', error);
+  }
+}
+
+function loadShareCardImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Share image could not be loaded'));
+    image.src = src;
+  });
+}
+
+async function drawShareCard(layout, image) {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(layout.width);
+  canvas.height = Math.round(layout.height);
+
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Share canvas is unavailable');
+
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(image, layout.image.x, layout.image.y, layout.image.width, layout.image.height);
+
+  context.textAlign = 'center';
+  context.textBaseline = 'alphabetic';
+
+  for (const line of layout.lines) {
+    context.font = line.font;
+    context.fillStyle = line.color;
+    context.fillText(line.text, line.x, line.y);
+  }
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error('Share image encoding failed')),
+      'image/jpeg',
+      0.92
+    );
+  });
+}
+
+function shareCardFileName(artwork) {
+  const slug = shareCardText(artwork.title)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return `${slug || 'artwork'}.jpg`;
+}
+
 async function shareArtwork(artwork) {
   const imageData = safeImageData(artwork.imageData);
   if (!imageData) {
@@ -1491,75 +1682,42 @@ async function shareArtwork(artwork) {
 
   showToast('Preparing share...');
 
+  let blob;
   try {
-    // 1. Create canvas and draw the card
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
+    const image = await loadShareCardImage(imageData);
+    const layout = buildShareCardLayout(
+      artwork,
+      { width: image.width, height: image.height },
+      { measureText: createCanvasTextMeasurer() }
+    );
+    await loadShareCardFonts(layout);
+    blob = await drawShareCard(layout, image);
+  } catch (error) {
+    console.error('Share card rendering failed:', error);
+    showToast('Share failed');
+    return;
+  }
 
-    // Wait for image to load
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
-      img.src = imageData;
-    });
+  const filename = shareCardFileName(artwork);
+  const file = new File([blob], filename, { type: 'image/jpeg' });
 
-    // Set canvas size (vertical layout)
-    const padding = 60;
-    const textHeight = 200;
-    const width = 1200;
-    const scale = width / img.width;
-    const height = (img.height * scale) + textHeight + (padding * 2);
-
-    canvas.width = width;
-    canvas.height = height;
-
-    // Background
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, height);
-
-    // Draw Image
-    ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, width, img.height * scale);
-
-    // Text configuration
-    ctx.fillStyle = '#1a1a1a';
-    ctx.textAlign = 'center';
-
-    // Title
-    ctx.font = 'bold 56px sans-serif';
-    ctx.fillText(artwork.title || 'Untitled', width / 2, (img.height * scale) + 100);
-
-    // Artist
-    ctx.fillStyle = '#666666';
-    ctx.font = '40px sans-serif';
-    ctx.fillText(artwork.artist || 'Unknown Artist', width / 2, (img.height * scale) + 170);
-
-    // Watermark
-    ctx.fillStyle = '#cccccc';
-    ctx.font = '24px sans-serif';
-    ctx.fillText('Art Album', width / 2, height - 30);
-
-    // 2. Convert to Blob
-    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
-    const file = new File([blob], `share-${artwork.id}.jpg`, { type: 'image/jpeg' });
-
-    // 3. Share or Download
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
       await navigator.share({
         files: [file],
-        title: artwork.title || 'Artwork',
-        text: `Check out "${artwork.title}" by ${artwork.artist} from my collection.`
+        title: shareCardText(artwork.title) || 'Artwork',
+        text: `"${shareCardText(artwork.title) || 'Untitled'}" by ${shareCardText(artwork.artist) || 'an unknown artist'}, from my collection.`
       });
-    } else {
-      // Fallback: Download
-      downloadBlob(blob, `share-${artwork.title || 'artwork'}.jpg`);
-      showToast('Image downloaded');
+      return;
+    } catch (error) {
+      // Closing the share sheet is a choice, not a failure.
+      if (error?.name === 'AbortError') return;
+      console.error('Share failed:', error);
     }
-
-  } catch (error) {
-    console.error('Share failed:', error);
-    showToast('Share failed');
   }
+
+  downloadBlob(blob, filename);
+  showToast('Image downloaded');
 }
 
 // ==================== 
@@ -1954,6 +2112,7 @@ const appReady = initApp();
 
 export {
   appReady,
+  buildShareCardLayout,
   calculateImageDimensions,
   db,
   state,
