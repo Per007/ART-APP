@@ -174,7 +174,10 @@ const state = {
   detailPanelExpanded: false,
   filteredArtworks: [], // List of artworks in current filter for navigation
   currentArtworkIndex: 0, // Current position in filteredArtworks
-  isDarkMode: false // Dark mode preference
+  isDarkMode: false, // Dark mode preference
+  collectionDialog: null,
+  searchOpen: false,
+  searchQuery: ''
 };
 
 // ==================== 
@@ -189,11 +192,17 @@ async function initApp() {
     document.body.classList.add('dark-theme');
   }
 
-  // Check if we need to seed data
-  const count = await db.artworks.count();
-  if (count === 0) {
-    await db.collections.bulkAdd(sampleCollections);
-    await db.artworks.bulkAdd(sampleArtworks);
+  const artworkCount = await db.artworks.count();
+  const collectionCount = await db.collections.count();
+  const onboardingComplete = localStorage.getItem('onboardingComplete') === 'true';
+
+  // Existing installations predate onboarding. Preserve their data and take
+  // them directly to the album; only a genuinely empty first run is onboarded.
+  if (onboardingComplete || artworkCount > 0 || collectionCount > 0) {
+    localStorage.setItem('onboardingComplete', 'true');
+    state.currentScreen = 'home';
+  } else {
+    state.currentScreen = 'onboarding';
   }
 
   renderApp();
@@ -217,6 +226,24 @@ function toggleDarkMode(enabled) {
   }
 }
 
+function completeOnboarding() {
+  localStorage.setItem('onboardingComplete', 'true');
+  showScreen('home');
+}
+
+async function startEmptyOnboarding() {
+  completeOnboarding();
+}
+
+async function startDemoOnboarding() {
+  await db.transaction('rw', db.artworks, db.collections, async () => {
+    await db.collections.bulkPut(sampleCollections);
+    await db.artworks.bulkPut(sampleArtworks);
+  });
+  completeOnboarding();
+  showToast('Demo collection added');
+}
+
 // ==================== 
 // RENDERING
 // ====================
@@ -226,16 +253,51 @@ function renderApp() {
 
   app.innerHTML = `
     ${renderHomeScreen()}
+    ${renderOnboardingScreen()}
     ${renderDetailScreen()}
     ${renderAddScreen()}
     ${renderEditScreen()}
     ${renderSettingsScreen()}
     ${renderToast()}
     ${renderConfirmDialog()}
+    ${renderCollectionDialog()}
   `;
 
   attachEventListeners();
   showScreen(state.currentScreen);
+}
+
+function renderOnboardingScreen() {
+  return `
+    <div class="screen screen-onboarding" id="screen-onboarding">
+      <main class="onboarding-content">
+        <div class="onboarding-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32">
+            <rect x="5" y="5" width="22" height="22" rx="2"/>
+            <path d="M10 21l5-6 4 4 3-3 3 5"/>
+          </svg>
+        </div>
+        <h1>Start your art album</h1>
+        <p>Keep a private visual record of works you own and pieces you want to remember.</p>
+
+        <div class="onboarding-actions">
+          <button class="onboarding-btn primary" id="onboarding-empty">
+            <span>Start an empty album</span>
+            <small>Add your own first artwork</small>
+          </button>
+          <button class="onboarding-btn" id="onboarding-demo">
+            <span>Explore the demo</span>
+            <small>See an example collection</small>
+          </button>
+          <button class="onboarding-btn" id="onboarding-import">
+            <span>Import a backup</span>
+            <small>Restore an Art Album JSON file</small>
+          </button>
+        </div>
+      </main>
+      <input type="file" accept=".json,application/json" class="file-input" id="onboarding-import-input">
+    </div>
+  `;
 }
 
 function renderHomeScreen() {
@@ -245,7 +307,7 @@ function renderHomeScreen() {
         <div class="header-top">
           <span class="logo">Collection</span>
           <div class="header-actions">
-            <button class="icon-btn" aria-label="Search">
+            <button class="icon-btn" id="search-btn" aria-label="Search" aria-expanded="false">
               <svg viewBox="0 0 24 24">
                 <circle cx="11" cy="11" r="7"/>
                 <path d="M21 21l-4.35-4.35"/>
@@ -259,6 +321,15 @@ function renderHomeScreen() {
               </svg>
             </button>
           </div>
+        </div>
+
+        <div class="search-row" id="search-row" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/>
+            <path d="M21 21l-4.35-4.35"/>
+          </svg>
+          <input id="search-input" type="search" placeholder="Search artworks" aria-label="Search artworks" autocomplete="off">
+          <button class="search-close" id="search-close" aria-label="Close search">Close</button>
         </div>
         
         <nav class="tabs">
@@ -415,7 +486,7 @@ function renderAddScreen() {
         </div>
       </div>
       
-      <input type="file" accept="image/*" class="file-input" id="file-input">
+      <input type="file" accept="image/jpeg,image/png,image/webp" class="file-input" id="file-input">
     </div>
   `;
 }
@@ -464,6 +535,23 @@ function renderConfirmDialog() {
   `;
 }
 
+function renderCollectionDialog() {
+  return `
+    <div class="dialog-overlay" id="collection-dialog-overlay" role="presentation">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="collection-dialog-title">
+        <h3 id="collection-dialog-title">New collection</h3>
+        <label class="input-label" for="collection-name-input">Name</label>
+        <input class="input-field dialog-field" id="collection-name-input" type="text" maxlength="60" autocomplete="off">
+        <p class="dialog-error" id="collection-dialog-error" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button class="dialog-btn cancel" id="collection-dialog-cancel">Cancel</button>
+          <button class="dialog-btn primary" id="collection-dialog-save">Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderSettingsScreen() {
   return `
     <div class="screen screen-settings" id="screen-settings">
@@ -491,6 +579,14 @@ function renderSettingsScreen() {
               <span class="toggle-slider"></span>
             </label>
           </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-heading">
+            <h2 class="form-section-title">Collections</h2>
+            <button class="text-btn" id="settings-add-collection">Add</button>
+          </div>
+          <div class="settings-collection-list" id="settings-collection-list"></div>
         </section>
         
         <section class="settings-section">
@@ -555,15 +651,56 @@ async function loadArtworks() {
     artworks = artworks.filter(a => a.collections && a.collections.includes(state.currentCollection));
   }
 
+  if (state.searchQuery) {
+    const query = normalizeSearchValue(state.searchQuery);
+    artworks = artworks.filter((artwork) => normalizeSearchValue([
+      artwork.title,
+      artwork.artist,
+      artwork.year,
+      artwork.medium,
+      artwork.location,
+      artwork.personalNote
+    ].join(' ')).includes(query));
+  }
+
   // Sort by creation date (newest first)
   artworks.sort((a, b) => b.createdAt - a.createdAt);
 
   return artworks;
 }
 
+function normalizeSearchValue(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase()
+    .trim();
+}
+
 async function loadCollections() {
   const collections = await db.collections.orderBy('sortOrder').toArray();
   return collections;
+}
+
+async function renderSettingsCollections() {
+  const container = document.getElementById('settings-collection-list');
+  if (!container) return;
+
+  const collections = await loadCollections();
+  if (collections.length === 0) {
+    container.innerHTML = '<p class="settings-empty">No collections yet.</p>';
+    return;
+  }
+
+  container.innerHTML = collections.map((collection) => `
+    <div class="collection-manage-row">
+      <span class="collection-manage-name">${escapeHtml(collection.name)}</span>
+      <div class="collection-manage-actions">
+        <button class="small-action-btn" data-action="rename-collection" data-id="${escapeHtml(collection.id)}" aria-label="Rename ${escapeHtml(collection.name)}">Rename</button>
+        <button class="small-action-btn danger" data-action="delete-collection" data-id="${escapeHtml(collection.id)}" aria-label="Delete ${escapeHtml(collection.name)}">Delete</button>
+      </div>
+    </div>
+  `).join('');
 }
 
 async function updateCounts() {
@@ -595,6 +732,7 @@ async function renderFilterBar() {
 async function renderArtworkGrid() {
   const artworks = await loadArtworks();
   const grid = document.getElementById('artwork-grid');
+  await updateCounts();
 
   if (artworks.length === 0) {
     grid.innerHTML = `
@@ -604,8 +742,8 @@ async function renderArtworkGrid() {
           <circle cx="8.5" cy="8.5" r="1.5"/>
           <polyline points="21 15 16 10 5 21"/>
         </svg>
-        <h3>No artworks yet</h3>
-        <p>Tap the + button to add your first piece</p>
+        <h3>${state.searchQuery ? 'No matching artworks' : 'No artworks yet'}</h3>
+        <p>${state.searchQuery ? 'Try another search term' : 'Tap the + button to add your first piece'}</p>
       </div>
     `;
     return;
@@ -633,7 +771,23 @@ async function renderArtworkGrid() {
   `;
   }).join('');
 
-  await updateCounts();
+}
+
+function openSearch() {
+  state.searchOpen = true;
+  const row = document.getElementById('search-row');
+  row.hidden = false;
+  document.getElementById('search-btn').setAttribute('aria-expanded', 'true');
+  requestAnimationFrame(() => document.getElementById('search-input').focus());
+}
+
+function closeSearch() {
+  state.searchOpen = false;
+  state.searchQuery = '';
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-row').hidden = true;
+  document.getElementById('search-btn').setAttribute('aria-expanded', 'false');
+  renderArtworkGrid();
 }
 
 // ==================== 
@@ -654,6 +808,8 @@ function showScreen(screenId) {
   if (screenId === 'home') {
     renderFilterBar();
     renderArtworkGrid();
+  } else if (screenId === 'settings') {
+    renderSettingsCollections();
   }
 }
 
@@ -936,7 +1092,7 @@ function toggleDetailPanel(expand) {
 // ADD/EDIT ARTWORK
 // ====================
 
-function startAddArtwork() {
+function startAddArtwork(showCaptureScreen = true) {
   state.newArtwork = {
     id: 'art-' + Date.now(),
     status: 'owned',
@@ -959,42 +1115,133 @@ function startAddArtwork() {
   viewfinder.classList.remove('has-image');
   viewfinder.innerHTML = '<span class="viewfinder-hint">Tap to select an image</span>';
 
-  showScreen('add');
+  if (showCaptureScreen) showScreen('add');
 }
 
-function handleImageSelect(file) {
-  if (!file) return;
+function openArtworkPicker() {
+  startAddArtwork(false);
+  document.getElementById('file-input').click();
+}
 
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-  if (!allowedTypes.includes(file.type)) {
-    showToast('Choose a JPG, PNG, WebP or GIF image');
-    return;
+function calculateImageDimensions(width, height, maxDimension = 2200) {
+  if (!width || !height) throw new Error('Invalid image dimensions');
+  const scale = Math.min(1, maxDimension / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale))
+  };
+}
+
+async function decodeImageFile(file) {
+  if ('createImageBitmap' in globalThis) {
+    return globalThis.createImageBitmap(file, { imageOrientation: 'from-image' });
   }
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const imageData = safeImageData(e.target.result);
-    if (!imageData) {
-      showToast('This image could not be read safely');
-      return;
-    }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error('Image decoding failed'));
+      image.src = url;
+    });
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
-    state.newArtwork.imageData = imageData;
+async function encodeOptimizedImage(image, dimensions, quality = 0.82) {
+  const canvas = document.createElement('canvas');
+  canvas.width = dimensions.width;
+  canvas.height = dimensions.height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Image canvas is unavailable');
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(image, 0, 0, dimensions.width, dimensions.height);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error('Image encoding failed')),
+      'image/webp',
+      quality
+    );
+  });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Image reading failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function optimizeImageFile(file, options = {}) {
+  const maxInputBytes = options.maxInputBytes ?? 25 * 1024 * 1024;
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+
+  if (!allowedTypes.includes(file.type)) {
+    throw new Error('Choose a JPG, PNG or WebP image');
+  }
+  if (file.size > maxInputBytes) {
+    throw new Error('Image is larger than 25 MB');
+  }
+
+  const decode = options.decode ?? decodeImageFile;
+  const encode = options.encode ?? encodeOptimizedImage;
+  const toDataUrl = options.toDataUrl ?? blobToDataUrl;
+  const image = await decode(file);
+
+  try {
+    const dimensions = calculateImageDimensions(image.width, image.height, options.maxDimension ?? 2200);
+    const blob = await encode(image, dimensions, options.quality ?? 0.82);
+    const dataUrl = await toDataUrl(blob);
+    if (!safeImageData(dataUrl)) throw new Error('Optimized image is invalid');
+
+    return {
+      dataUrl,
+      width: dimensions.width,
+      height: dimensions.height,
+      originalBytes: file.size,
+      optimizedBytes: blob.size,
+      type: blob.type || 'image/webp'
+    };
+  } finally {
+    if (typeof image.close === 'function') image.close();
+  }
+}
+
+async function handleImageSelect(file) {
+  if (!file) return;
+
+  const viewfinder = document.getElementById('viewfinder');
+  viewfinder.classList.remove('has-image');
+  viewfinder.innerHTML = '<span class="viewfinder-hint">Optimizing image…</span>';
+
+  try {
+    const optimized = await optimizeImageFile(file);
+    state.newArtwork.imageData = optimized.dataUrl;
+    state.newArtwork.imageWidth = optimized.width;
+    state.newArtwork.imageHeight = optimized.height;
+    state.newArtwork.imageSize = optimized.optimizedBytes;
 
     // Update viewfinder
-    const viewfinder = document.getElementById('viewfinder');
     viewfinder.classList.add('has-image');
     const preview = document.createElement('img');
-    preview.src = imageData;
+    preview.src = optimized.dataUrl;
     preview.alt = 'Selected artwork';
     viewfinder.replaceChildren(preview);
 
-    // Auto-proceed to edit after short delay
-    setTimeout(() => {
-      showEditScreen(state.newArtwork, true);
-    }, 500);
-  };
-  reader.readAsDataURL(file);
+    await showEditScreen(state.newArtwork, true);
+  } catch (error) {
+    console.error('Image optimization failed:', error);
+    viewfinder.innerHTML = '<span class="viewfinder-hint">Tap to select an image</span>';
+    showToast(error.message || 'This image could not be processed');
+  }
 }
 
 async function showEditScreen(artwork, isNew = false) {
@@ -1120,6 +1367,113 @@ async function saveArtwork() {
 
   // Go back to home
   showScreen('home');
+}
+
+function syncEditFormToState() {
+  const titleInput = document.getElementById('input-title');
+  if (!titleInput || !state.newArtwork) return;
+
+  state.newArtwork.title = titleInput.value.trim();
+  state.newArtwork.artist = document.getElementById('input-artist').value.trim();
+  state.newArtwork.year = document.getElementById('input-year').value.trim() || null;
+  state.newArtwork.medium = document.getElementById('input-medium').value.trim();
+  state.newArtwork.dimensions = document.getElementById('input-dimensions').value.trim();
+  state.newArtwork.location = document.getElementById('input-location').value.trim();
+  state.newArtwork.personalNote = document.getElementById('input-note').value.trim();
+  state.newArtwork.collections = Array.from(
+    document.querySelectorAll('.collection-pill.active:not(.add)')
+  ).map((pill) => pill.dataset.collection);
+}
+
+function openCollectionDialog(collection = null, selectAfterCreate = false) {
+  state.collectionDialog = {
+    id: collection?.id || null,
+    selectAfterCreate
+  };
+
+  document.getElementById('collection-dialog-title').textContent = collection ? 'Rename collection' : 'New collection';
+  document.getElementById('collection-name-input').value = collection?.name || '';
+  document.getElementById('collection-dialog-error').textContent = '';
+  document.getElementById('collection-dialog-overlay').classList.add('show');
+  requestAnimationFrame(() => document.getElementById('collection-name-input').focus());
+}
+
+function hideCollectionDialog() {
+  document.getElementById('collection-dialog-overlay').classList.remove('show');
+  state.collectionDialog = null;
+}
+
+async function saveCollectionDialog() {
+  const input = document.getElementById('collection-name-input');
+  const error = document.getElementById('collection-dialog-error');
+  const name = input.value.trim();
+
+  if (!name) {
+    error.textContent = 'Enter a collection name.';
+    input.focus();
+    return;
+  }
+
+  const collections = await loadCollections();
+  const duplicate = collections.find((collection) => (
+    collection.name.toLocaleLowerCase() === name.toLocaleLowerCase() &&
+    collection.id !== state.collectionDialog?.id
+  ));
+  if (duplicate) {
+    error.textContent = 'A collection with this name already exists.';
+    input.focus();
+    return;
+  }
+
+  let collectionId = state.collectionDialog?.id;
+  const selectAfterCreate = state.collectionDialog?.selectAfterCreate;
+
+  if (collectionId) {
+    await db.collections.update(collectionId, { name });
+    showToast('Collection renamed');
+  } else {
+    collectionId = globalThis.crypto?.randomUUID
+      ? `col-${globalThis.crypto.randomUUID()}`
+      : `col-${Date.now()}`;
+    const nextSortOrder = collections.length
+      ? Math.max(...collections.map((collection) => Number(collection.sortOrder) || 0)) + 1
+      : 0;
+    await db.collections.add({ id: collectionId, name, sortOrder: nextSortOrder });
+    showToast('Collection created');
+  }
+
+  hideCollectionDialog();
+  await renderFilterBar();
+  await renderSettingsCollections();
+
+  if (selectAfterCreate && state.newArtwork) {
+    syncEditFormToState();
+    state.newArtwork.collections = [...new Set([
+      ...(state.newArtwork.collections || []),
+      collectionId
+    ])];
+    await showEditScreen(state.newArtwork, document.getElementById('edit-title').textContent === 'New Artwork');
+  }
+}
+
+async function deleteCollection(collection) {
+  await db.transaction('rw', db.artworks, db.collections, async () => {
+    const artworks = await db.artworks.toArray();
+    const changedArtworks = artworks
+      .filter((artwork) => artwork.collections?.includes(collection.id))
+      .map((artwork) => ({
+        ...artwork,
+        collections: artwork.collections.filter((id) => id !== collection.id)
+      }));
+
+    if (changedArtworks.length) await db.artworks.bulkPut(changedArtworks);
+    await db.collections.delete(collection.id);
+  });
+
+  if (state.currentCollection === collection.id) state.currentCollection = null;
+  showToast('Collection deleted');
+  await renderSettingsCollections();
+  await renderFilterBar();
 }
 
 async function deleteArtwork(artworkId) {
@@ -1306,10 +1660,16 @@ async function importCollection(file, mode = 'merge') {
     }
 
     showToast(`Imported ${data.artworks.length} artworks`);
-    showScreen('home');
+    if (state.currentScreen === 'onboarding') {
+      completeOnboarding();
+    } else {
+      showScreen('home');
+    }
+    return true;
   } catch (error) {
     console.error('Import failed:', error);
     showToast('Import failed: Invalid file');
+    return false;
   }
 }
 
@@ -1331,6 +1691,17 @@ function formatDate(date) {
 // ====================
 
 function attachEventListeners() {
+  // First-run onboarding
+  document.getElementById('onboarding-empty').addEventListener('click', startEmptyOnboarding);
+  document.getElementById('onboarding-demo').addEventListener('click', startDemoOnboarding);
+  document.getElementById('onboarding-import').addEventListener('click', () => {
+    document.getElementById('onboarding-import-input').click();
+  });
+  document.getElementById('onboarding-import-input').addEventListener('change', async (e) => {
+    if (e.target.files[0]) await importCollection(e.target.files[0], 'merge');
+    e.target.value = '';
+  });
+
   // Tab navigation
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -1372,10 +1743,21 @@ function attachEventListeners() {
   });
 
   // FAB
-  document.getElementById('fab-add').addEventListener('click', startAddArtwork);
+  document.getElementById('fab-add').addEventListener('click', openArtworkPicker);
 
   // Settings button
   document.getElementById('settings-btn').addEventListener('click', () => showScreen('settings'));
+
+  // Search
+  document.getElementById('search-btn').addEventListener('click', openSearch);
+  document.getElementById('search-close').addEventListener('click', closeSearch);
+  document.getElementById('search-input').addEventListener('input', (e) => {
+    state.searchQuery = e.target.value;
+    renderArtworkGrid();
+  });
+  document.getElementById('search-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSearch();
+  });
 
   // Settings screen
   document.getElementById('settings-back').addEventListener('click', () => showScreen('home'));
@@ -1390,6 +1772,24 @@ function attachEventListeners() {
     if (e.target.files[0]) {
       importCollection(e.target.files[0], 'merge');
       e.target.value = ''; // Reset input
+    }
+  });
+  document.getElementById('settings-add-collection').addEventListener('click', () => openCollectionDialog());
+  document.getElementById('settings-collection-list').addEventListener('click', async (e) => {
+    const actionButton = e.target.closest('[data-action]');
+    if (!actionButton) return;
+
+    const collection = await db.collections.get(actionButton.dataset.id);
+    if (!collection) return;
+
+    if (actionButton.dataset.action === 'rename-collection') {
+      openCollectionDialog(collection);
+    } else if (actionButton.dataset.action === 'delete-collection') {
+      showConfirmDialog(
+        'Delete collection?',
+        `Artworks stay in your album, but “${collection.name}” will be removed from them.`,
+        () => deleteCollection(collection)
+      );
     }
   });
 
@@ -1483,8 +1883,9 @@ function attachEventListeners() {
   document.getElementById('gallery-btn').addEventListener('click', () => document.getElementById('file-input').click());
   document.getElementById('viewfinder').addEventListener('click', () => document.getElementById('file-input').click());
 
-  document.getElementById('file-input').addEventListener('change', (e) => {
-    handleImageSelect(e.target.files[0]);
+  document.getElementById('file-input').addEventListener('change', async (e) => {
+    await handleImageSelect(e.target.files[0]);
+    e.target.value = '';
   });
 
   // Edit screen
@@ -1513,6 +1914,11 @@ function attachEventListeners() {
     if (collectionPill) {
       collectionPill.classList.toggle('active');
     }
+
+    if (e.target.closest('#add-collection-btn')) {
+      syncEditFormToState();
+      openCollectionDialog(null, true);
+    }
   });
 
   // Confirm dialog
@@ -1528,10 +1934,46 @@ function attachEventListeners() {
       hideConfirmDialog();
     }
   });
+
+  document.getElementById('collection-dialog-cancel').addEventListener('click', hideCollectionDialog);
+  document.getElementById('collection-dialog-save').addEventListener('click', saveCollectionDialog);
+  document.getElementById('collection-dialog-overlay').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) hideCollectionDialog();
+  });
+  document.getElementById('collection-name-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveCollectionDialog();
+    if (e.key === 'Escape') hideCollectionDialog();
+  });
 }
 
 // ==================== 
 // START APP
 // ====================
 
-initApp();
+const appReady = initApp();
+
+export {
+  appReady,
+  calculateImageDimensions,
+  db,
+  state,
+  deleteCollection,
+  closeSearch,
+  completeOnboarding,
+  hideCollectionDialog,
+  handleImageSelect,
+  importCollection,
+  openCollectionDialog,
+  openArtworkPicker,
+  openSearch,
+  optimizeImageFile,
+  loadArtworks,
+  renderArtworkGrid,
+  renderSettingsCollections,
+  saveCollectionDialog,
+  startDemoOnboarding,
+  startEmptyOnboarding,
+  startAddArtwork,
+  showEditScreen,
+  showScreen
+};
