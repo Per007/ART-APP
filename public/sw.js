@@ -1,16 +1,34 @@
-const CACHE_NAME = 'art-album-v2';
+const CACHE_NAME = 'art-album-v3';
 const BASE_PATH = '/ART-APP/';
 const STATIC_ASSETS = [
     BASE_PATH,
     BASE_PATH + 'index.html',
-    BASE_PATH + 'assets/'
+    BASE_PATH + 'manifest.json',
+    BASE_PATH + 'icons/icon-192.svg',
+    BASE_PATH + 'icons/icon-512.svg'
 ];
 
 // Install event - cache static assets
 self.addEventListener('install', (event) => {
     event.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-            return cache.addAll(STATIC_ASSETS);
+        caches.open(CACHE_NAME).then(async (cache) => {
+            await cache.addAll(STATIC_ASSETS);
+
+            // Vite gives production assets hashed filenames. Read the built
+            // index so those exact JS and CSS files are available offline.
+            const indexResponse = await fetch(BASE_PATH + 'index.html', { cache: 'reload' });
+            if (!indexResponse.ok) return;
+
+            const html = await indexResponse.text();
+            const assetUrls = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+                .map((match) => new URL(match[1], self.location.origin))
+                .filter((url) => (
+                    url.origin === self.location.origin &&
+                    url.pathname.startsWith(BASE_PATH + 'assets/')
+                ))
+                .map((url) => url.href);
+
+            await cache.addAll(assetUrls);
         })
     );
     self.skipWaiting();
@@ -30,7 +48,7 @@ self.addEventListener('activate', (event) => {
     self.clients.claim();
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - refresh pages from the network and cache static assets
 self.addEventListener('fetch', (event) => {
     // Skip non-GET requests
     if (event.request.method !== 'GET') return;
@@ -40,26 +58,35 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    event.respondWith(
-        caches.match(event.request).then((cachedResponse) => {
-            if (cachedResponse) {
-                return cachedResponse;
-            }
-
-            return fetch(event.request).then((response) => {
-                // Don't cache non-successful responses
-                if (!response || response.status !== 200) {
+    if (event.request.mode === 'navigate') {
+        event.respondWith(
+            fetch(event.request)
+                .then((response) => {
+                    if (response && response.status === 200) {
+                        const copy = response.clone();
+                        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+                    }
                     return response;
-                }
+                })
+                .catch(async () => (
+                    await caches.match(event.request) ||
+                    await caches.match(BASE_PATH + 'index.html')
+                ))
+        );
+        return;
+    }
 
-                // Clone the response before caching
-                const responseToCache = response.clone();
-                caches.open(CACHE_NAME).then((cache) => {
-                    cache.put(event.request, responseToCache);
-                });
+    event.respondWith(
+        caches.match(event.request).then(async (cachedResponse) => {
+            if (cachedResponse) return cachedResponse;
 
-                return response;
-            });
+            const response = await fetch(event.request);
+            if (response && response.status === 200) {
+                const copy = response.clone();
+                const cache = await caches.open(CACHE_NAME);
+                await cache.put(event.request, copy);
+            }
+            return response;
         })
     );
 });

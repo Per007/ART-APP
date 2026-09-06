@@ -1,3 +1,44 @@
+import Dexie from 'dexie';
+
+// ====================
+// OUTPUT SAFETY
+// ====================
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function safeImageData(value) {
+  if (typeof value !== 'string') return null;
+  return /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(value) ? value : null;
+}
+
+function safePlaceholderClass(value) {
+  return /^placeholder-[1-6]$/.test(value || '') ? value : 'placeholder-1';
+}
+
+function artworkForDisplay(artwork) {
+  return {
+    ...artwork,
+    id: escapeHtml(artwork.id),
+    status: artwork.status === 'wishlist' ? 'wishlist' : 'owned',
+    title: escapeHtml(artwork.title),
+    artist: escapeHtml(artwork.artist),
+    year: escapeHtml(artwork.year),
+    medium: escapeHtml(artwork.medium),
+    dimensions: escapeHtml(artwork.dimensions),
+    location: escapeHtml(artwork.location),
+    personalNote: escapeHtml(artwork.personalNote),
+    imageData: safeImageData(artwork.imageData),
+    placeholderClass: safePlaceholderClass(artwork.placeholderClass)
+  };
+}
+
 // ==================== 
 // DATABASE SETUP
 // ====================
@@ -490,7 +531,7 @@ function renderSettingsScreen() {
         </section>
       </div>
       
-      <input type="file" accept=".zip" class="file-input" id="import-file-input">
+      <input type="file" accept=".json,application/json" class="file-input" id="import-file-input">
     </div>
   `;
 }
@@ -544,8 +585,8 @@ async function renderFilterBar() {
       All Collections
     </button>
     ${collections.map(c => `
-      <button class="filter-pill ${state.currentCollection === c.id ? 'active' : ''}" data-collection="${c.id}">
-        ${c.name}
+      <button class="filter-pill ${state.currentCollection === c.id ? 'active' : ''}" data-collection="${escapeHtml(c.id)}">
+        ${escapeHtml(c.name)}
       </button>
     `).join('')}
   `;
@@ -570,7 +611,9 @@ async function renderArtworkGrid() {
     return;
   }
 
-  grid.innerHTML = artworks.map(artwork => `
+  grid.innerHTML = artworks.map(artwork => {
+    artwork = artworkForDisplay(artwork);
+    return `
     <article class="artwork-card" data-id="${artwork.id}">
       <div class="artwork-image-container">
         ${artwork.imageData
@@ -587,7 +630,8 @@ async function renderArtworkGrid() {
         </p>
       </div>
     </article>
-  `).join('');
+  `;
+  }).join('');
 
   await updateCounts();
 }
@@ -618,7 +662,7 @@ function showScreen(screenId) {
 // ====================
 
 async function showDetail(artworkId) {
-  const artwork = await db.artworks.get(artworkId);
+  let artwork = await db.artworks.get(artworkId);
   if (!artwork) return;
 
   state.selectedArtwork = artwork;
@@ -628,6 +672,8 @@ async function showDetail(artworkId) {
   state.filteredArtworks = await loadArtworks();
   state.currentArtworkIndex = state.filteredArtworks.findIndex(a => a.id === artworkId);
   if (state.currentArtworkIndex === -1) state.currentArtworkIndex = 0;
+
+  artwork = artworkForDisplay(artwork);
 
   // Update navigation UI
   updateNavigationUI();
@@ -690,7 +736,7 @@ async function showDetail(artworkId) {
     <section class="info-section">
       <h2 class="info-section-title">Collections</h2>
       ${artworkCollections.map(c => `
-        <button class="collection-link">${c.name}</button>
+        <button class="collection-link">${escapeHtml(c.name)}</button>
       `).join(' ')}
     </section>
     ` : ''}
@@ -777,10 +823,11 @@ async function navigateArtwork(direction) {
   const artwork = state.filteredArtworks[newIndex];
 
   // Re-fetch from DB to ensure we have latest data
-  const freshArtwork = await db.artworks.get(artwork.id);
+  let freshArtwork = await db.artworks.get(artwork.id);
   if (!freshArtwork) return;
 
   state.selectedArtwork = freshArtwork;
+  freshArtwork = artworkForDisplay(freshArtwork);
 
   // Animate the transition
   const slideDirection = direction === 'prev' ? 'in-left' : 'in-right';
@@ -841,7 +888,7 @@ async function navigateArtwork(direction) {
     <section class="info-section">
       <h2 class="info-section-title">Collections</h2>
       ${artworkCollections.map(c => `
-        <button class="collection-link">${c.name}</button>
+        <button class="collection-link">${escapeHtml(c.name)}</button>
       `).join(' ')}
     </section>
     ` : ''}
@@ -918,14 +965,29 @@ function startAddArtwork() {
 function handleImageSelect(file) {
   if (!file) return;
 
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  if (!allowedTypes.includes(file.type)) {
+    showToast('Choose a JPG, PNG, WebP or GIF image');
+    return;
+  }
+
   const reader = new FileReader();
   reader.onload = (e) => {
-    state.newArtwork.imageData = e.target.result;
+    const imageData = safeImageData(e.target.result);
+    if (!imageData) {
+      showToast('This image could not be read safely');
+      return;
+    }
+
+    state.newArtwork.imageData = imageData;
 
     // Update viewfinder
     const viewfinder = document.getElementById('viewfinder');
     viewfinder.classList.add('has-image');
-    viewfinder.innerHTML = `<img src="${e.target.result}" alt="Selected artwork">`;
+    const preview = document.createElement('img');
+    preview.src = imageData;
+    preview.alt = 'Selected artwork';
+    viewfinder.replaceChildren(preview);
 
     // Auto-proceed to edit after short delay
     setTimeout(() => {
@@ -937,6 +999,7 @@ function handleImageSelect(file) {
 
 async function showEditScreen(artwork, isNew = false) {
   state.newArtwork = { ...artwork };
+  artwork = artworkForDisplay(artwork);
 
   const collections = await loadCollections();
 
@@ -1016,8 +1079,8 @@ async function showEditScreen(artwork, isNew = false) {
       <h2 class="form-section-title">Collections</h2>
       <div class="collection-pills">
         ${collections.map(c => `
-          <button class="collection-pill ${artwork.collections && artwork.collections.includes(c.id) ? 'active' : ''}" data-collection="${c.id}">
-            ${c.name}
+          <button class="collection-pill ${artwork.collections && artwork.collections.includes(c.id) ? 'active' : ''}" data-collection="${escapeHtml(c.id)}">
+            ${escapeHtml(c.name)}
           </button>
         `).join('')}
         <button class="collection-pill add" id="add-collection-btn">
@@ -1066,7 +1129,8 @@ async function deleteArtwork(artworkId) {
 }
 
 async function shareArtwork(artwork) {
-  if (!artwork.imageData) {
+  const imageData = safeImageData(artwork.imageData);
+  if (!imageData) {
     showToast('No image to share');
     return;
   }
@@ -1083,7 +1147,7 @@ async function shareArtwork(artwork) {
     await new Promise((resolve, reject) => {
       img.onload = resolve;
       img.onerror = reject;
-      img.src = artwork.imageData;
+      img.src = imageData;
     });
 
     // Set canvas size (vertical layout)
@@ -1193,11 +1257,7 @@ async function exportCollection() {
       }))
     };
 
-    // Create zip using inline implementation (no external dependency)
-    const zipParts = [];
-    const jsonBlob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-
-    // Create a simple format - just download JSON with base64 images embedded
+    // Download one portable JSON file with the image data embedded.
     const fullExport = {
       ...exportData,
       artworks: artworks // Include full artwork data with images
@@ -1220,7 +1280,7 @@ async function importCollection(file, mode = 'merge') {
     const text = await file.text();
     const data = JSON.parse(text);
 
-    if (!data.artworks || !data.collections) {
+    if (!Array.isArray(data.artworks) || !Array.isArray(data.collections)) {
       throw new Error('Invalid backup file format');
     }
 
